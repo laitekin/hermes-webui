@@ -20813,8 +20813,17 @@ def _handle_media(handler, parsed):
     # Archives are download-only: never added to the inline-preview sets below,
     # so they always get Content-Disposition: attachment.
     _ARCHIVE_TYPES = {"application/zip"}
+    _SESSION_TEXT_ARTIFACT_TYPES = {
+        "text/csv",
+        "text/x-diff",
+        "application/vnd.excalidraw+json",
+    }
     _SESSION_MEDIA_TOKEN_TYPES = (
-        _INLINE_IMAGE_TYPES | _AUDIO_VIDEO_PDF_TYPES | _ARCHIVE_TYPES | {"text/html"}
+        _INLINE_IMAGE_TYPES
+        | _AUDIO_VIDEO_PDF_TYPES
+        | _ARCHIVE_TYPES
+        | _SESSION_TEXT_ARTIFACT_TYPES
+        | {"text/html"}
     )
     session_media_allowed = _session_media_token_allows_path(
         qs.get("session_id", [""])[0],
