@@ -11,6 +11,7 @@ Covers:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -41,6 +42,48 @@ def _media_fixture_dir() -> pathlib.Path:
     fixture_dir = TEST_WORKSPACE / ".media-fixtures"
     fixture_dir.mkdir(parents=True, exist_ok=True)
     return fixture_dir
+
+
+# /api/media grants a few roots unconditionally, /tmp among them, so a plain
+# TemporaryDirectory() is never "outside every allowed root" — and neither is
+# one under REPO_ROOT when the checkout itself lives in /tmp (git worktrees, CI
+# scratch dirs). Tests that assert the fail-closed 403 must therefore pick a
+# fixture location verified against those roots rather than assume one.
+_UNCONDITIONAL_MEDIA_ROOTS = (
+    pathlib.Path("/tmp"),
+    pathlib.Path.home() / ".hermes",
+)
+
+
+def _is_within(path: pathlib.Path, root: pathlib.Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+@contextlib.contextmanager
+def _outside_allowed_roots_dir():
+    """Yield a temp dir verified to sit outside every unconditional media root.
+
+    Skips the test when no candidate location qualifies, which beats asserting
+    403 on a path the endpoint is entitled to serve.
+    """
+    for parent in (REPO_ROOT, pathlib.Path.home() / ".cache"):
+        if any(_is_within(parent, root) for root in _UNCONDITIONAL_MEDIA_ROOTS):
+            continue
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        with tempfile.TemporaryDirectory(dir=parent) as outside:
+            yield pathlib.Path(outside)
+            return
+    raise unittest.SkipTest(
+        "no fixture directory available outside the /api/media allowed roots "
+        f"({', '.join(str(r) for r in _UNCONDITIONAL_MEDIA_ROOTS)})"
+    )
 
 
 # ── Static analysis: renderMd MEDIA stash ────────────────────────────────────
@@ -709,7 +752,7 @@ class TestMediaEndpointUnit(unittest.TestCase):
             def wfile(self):
                 return self._W(self)
 
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory(dir=REPO_ROOT) as outside:
+        with tempfile.TemporaryDirectory() as home, _outside_allowed_roots_dir() as outside:
             hermes_home = pathlib.Path(home) / ".hermes"
             hermes_home.mkdir(parents=True)
             ws = hermes_home / "workspace"
@@ -772,7 +815,7 @@ class TestMediaEndpointUnit(unittest.TestCase):
                 "application/vnd.excalidraw+json",
             ),
         }
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory(dir=REPO_ROOT) as outside:
+        with tempfile.TemporaryDirectory() as home, _outside_allowed_roots_dir() as outside:
             hermes_home = pathlib.Path(home) / ".hermes"
             hermes_home.mkdir(parents=True)
             ws = hermes_home / "workspace"
