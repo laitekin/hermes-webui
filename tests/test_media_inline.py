@@ -807,6 +807,7 @@ class TestMediaEndpointUnit(unittest.TestCase):
                 return self._W(self)
 
         cases = {
+            "report.html": ("<h1>Report</h1>", "text/html"),
             "sample.csv": ("name,value\nalpha,1\n", "text/csv"),
             "sample.diff": ("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n", "text/x-diff"),
             "sample.patch": ("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n", "text/x-diff"),
@@ -840,21 +841,33 @@ class TestMediaEndpointUnit(unittest.TestCase):
                  mock.patch.object(routes, "get_session", return_value=session), \
                  mock.patch("api.auth.is_auth_enabled", lambda: False):
                 for target in files:
-                    handler = _Handler()
-                    routes._handle_media(
-                        handler,
-                        SimpleNamespace(
-                            query=(
-                                f"path={urllib.parse.quote(str(target.resolve()))}"
-                                "&session_id=s-media&inline=1"
+                    for role in ("assistant", "tool", "user", "system", "developer", "", "unknown", None, "missing"):
+                        message = {"content": "\n".join(f"MEDIA:{item}" for item in files)}
+                        if role != "missing":
+                            message["role"] = role
+                        session.messages = [message]
+                        handler = _Handler()
+                        routes._handle_media(
+                            handler,
+                            SimpleNamespace(
+                                query=(
+                                    f"path={urllib.parse.quote(str(target.resolve()))}"
+                                    "&session_id=s-media&inline=1"
+                                ),
+                                path="/api/media",
                             ),
-                            path="/api/media",
-                        ),
-                    )
-                    with self.subTest(suffix=target.suffix):
-                        self.assertEqual(handler.status, 200)
-                        self.assertIn(cases[target.name][1], handler.headers.get("content-type", ""))
-                        self.assertIn(cases[target.name][0].encode("utf-8"), handler.body)
+                        )
+                        with self.subTest(suffix=target.suffix, role=role):
+                            if role in {"assistant", "tool"}:
+                                self.assertEqual(handler.status, 200)
+                                self.assertIn(cases[target.name][1], handler.headers.get("content-type", ""))
+                                self.assertIn(cases[target.name][0].encode("utf-8"), handler.body)
+                                if target.suffix != ".html":
+                                    self.assertIn("attachment", handler.headers.get("content-disposition", ""))
+                                self.assertEqual(handler.headers.get("x-content-type-options"), "nosniff")
+                            else:
+                                self.assertEqual(handler.status, 403)
+                                self.assertNotIn(cases[target.name][0].encode("utf-8"), handler.body)
 
                     denied = _Handler()
                     routes._handle_media(
