@@ -26,6 +26,13 @@ HTML; no-session requests stay denied. The new text-artifact types remain
 download-only with `nosniff`, even when `inline=1` is requested. Hard-denied
 state and secret paths stay denied regardless of message role or session token.
 
+Run `./scripts/test.sh tests/test_media_preview_session_lifetime.py` for lazy
+preview identity across a session switch. CSV, Excalidraw, PDF, and HTML action
+and fallback URLs retain the session and snapshot captured for their fetch,
+including requests started without a session. The Node harness executes the
+real loaders with deferred responses and PDF-ready/timeout callbacks; it does
+not certify browser rendering or real CDN availability.
+
 ## Static JS runtime lint (brick-class regression guard)
 
 Some JS bugs throw a `TypeError`/`ReferenceError` only when a specific function
