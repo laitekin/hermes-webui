@@ -30,6 +30,50 @@ This RFC defines a consistency contract for those layers. It complements the
 larger run adapter direction in #1925 by documenting what must remain coherent
 while WebUI still has multiple overlapping state stores.
 
+## Agent registration after cancellation
+
+Initial and credential self-heal Agent construction use the same registration
+boundary. Under `STREAMS_LOCK`, both the worker-retained cancellation event and
+live stream membership must permit registration. A removed `CANCEL_FLAGS` entry
+is not permission to restart. If Stop won during initial or self-heal
+construction, the candidate must not enter the reusable cache or call
+`run_conversation`. Stream registration, reusable-cache publication and the
+in-memory lifecycle handle share one atomic Stop admission, using lock order
+`STREAMS_LOCK` then `SESSION_AGENT_CACHE_LOCK`. Merely moving a cache write
+after a cancellation check does not protect that check-to-publication gap.
+
+After prompt preparation and immediately before each initial/self-heal invocation,
+revalidate the retained cancel event, stream membership and exact registered
+Agent. If Stop already won, retire a matching reusable entry only while the
+existing `SESSION_WRITEBACK_OWNERS` record still equals this exact stream.
+Hold that ownership lock through cache/lifecycle retirement. Object identity is
+insufficient because successors can reuse the same Agent; absent ownership is
+not permission either, since a completed successor clears its record. Never
+clear a successor's cache or lifecycle handle, and do not issue another Agent
+interrupt for an invocation that never started. Rejected cache-hit registration
+likewise must not interrupt the borrowed Agent; only a never-published newly
+constructed candidate may receive construction-cancellation cleanup. Drop the
+old worker's local borrowed handle as well, so final pending-Steer drain cannot
+reach a successor through an object-reference fallback.
+Stop after invocation admission uses the existing Agent interrupt mechanism;
+registry locks must not span provider or tool execution. LRU eviction/close stays
+outside the stream lock and retains the existing active-worker policy.
+
+Interrupt and cancellation finalization occur outside the stream registry lock.
+Session finalization still owns the session lock: the returned-error path already
+holds it, while initial registration and the exception path acquire it. Do not
+reacquire this non-reentrant lock from a branch that already owns it.
+
+## Run-journal sequence publication
+
+Within one WebUI process, auto-numbered appends to the same journal allocate
+sequence numbers and write their rows under the same per-path lock.
+`RunJournalWriter` delegates both operations to `append_run_event`; it must not
+reserve a sequence and release the lock before the physical append. Otherwise
+individually valid rows can reach disk out of order and the session replay
+reader must reject them as noncontiguous. This does not change caller-supplied
+sequence semantics, cross-process ownership, or failed-write recovery.
+
 ## Inactive compression continuation recovery
 
 The Agent profile's SQLite compression lineage owns the canonical continuation,
@@ -127,7 +171,41 @@ and 5; it does not mark every run-state boundary implemented.
    do not conflict, and the pairing is unambiguous. Keep the rich sidecar row;
    if any requirement is missing or contradictory, preserve both rows rather
    than deduplicating. Literal scalar `[screenshot]` text alone is not identity
-   evidence.
+   evidence. A WebUI-submitted native-image turn has a separate display owner:
+   keep its exact submitted text and attachment in the visible session row,
+   while the Agent's expanded multipart row remains in `context_messages` for
+   model replay. While the turn is active, the WebUI may hide an Agent user row
+   from display only after its worker confirms that the active stream's exact
+   `pending_started_at` value was passed to the Agent as
+   `persist_user_timestamp`; persist that private proof with the session and
+   validate it against the pending stream, source, and timestamp after reload.
+   Never include the proof in public session payloads. This applies to
+   native-image and scalar text-attachment rows, and never changes model
+   context. If multiple user rows share that timestamp, omit the whole
+   ambiguous display bucket until the turn settles; keep all rows in model
+   context. Do not identify the row by its text. If a stream dies before
+   settlement, state.db self-heal must save the submitted prompt and attachments
+   as a visible sidecar row before clearing pending metadata only when there is
+   genuine state.db output beyond that submitted turn. Otherwise, leave pending
+   state intact for journaled partial-output and interruption-marker recovery.
+   The Agent row remains available in model context. A partial continuation
+   must use one consistent parent snapshot when projecting a conflicting
+   provider payload onto its sidecar-owned display row.
+   Match settled native-image scalar projections only with trusted turn and
+   durable-row identity, never the marker alone. A durable row ID proves row
+   identity, not provider-payload freshness: when the sidecar and state.db have
+   conflicting nonempty `api_content`, preserve both versions for model-context
+   replay without mutating either. For visible display, a marked mirror may
+   share the existing sidecar bubble only when its valid durable row ID, exact
+   timestamp, and exact visible user content match; keep the sidecar-owned row
+   and its display metadata. Distinct row IDs, ambiguous or invalid identities,
+   and different visible user text remain separate only while eligible under
+   the existing edit/undo truncation watermark and checkpoint-order rules;
+   removed rows must not reappear in display or model replay. Fill a missing
+   payload from the other copy; repeated reconciliation must remain bounded
+   and idempotent.
+   Agent state.db alone cannot restore the original attachment if the WebUI
+   sidecar is lost.
    Visible interim assistant progress must remain visible timeline content; a
    compact Activity disclosure may summarize adjacent tool/debug detail, but it
    must not be the only place where the user can see emitted progress text.
